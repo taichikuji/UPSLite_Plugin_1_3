@@ -1,92 +1,100 @@
-# Based on UPS Lite v1.1 from https://github.com/xenDE
-# Made specifically to address the problems caused by the hardware changes in 1.3.  Oh yeah I also removed the auto-shutdown feature because it's kind of broken. 
+# Based on pisugar3.py from https://github.com/taiyonemo
+# Made specifically to address the problems not fully resolved by the UPS-Lite python plugin available publicly by PhreakBoutique. Auto-Shutdown feature fixed and recovered as well.
 #
-# To setup, see page six of this manual to see how to enable i2c:
-# https://github.com/linshuqin329/UPS-Lite/blob/master/UPS-Lite_V1.3_CW2015/Instructions%20for%20UPS-Lite%20V1.3.pdf
-#
-# Follow page seven, install the dependencies (python-smbus) and copy this script over for later use:
-# https://github.com/linshuqin329/UPS-Lite/blob/master/UPS-Lite_V1.3_CW2015/UPS_Lite_V1.3_CW2015.py
-#
-# Now, install this plugin by copying this to the 'available-plugins' folder in your pwnagotchi, install and enable the plugin with the commands:
-# sudo pwnagotchi plugins install upslite_plugin_1_3
-# sudo pwnagotchi plugins enable upslite_plugin_1_3
-# 
-# Now restart raspberry pi. Once back up ensure upslite_plugin_1_3 plugin is turned on in the WebUI. If there is still '0%' on your battery meter
-# run the script we saved earlier and ensure that the pwnagotchi is plugged in both at the battery and the raspberry pi. The script should start trying to 
-# read the battery, and should be successful once there's a USB cable running power to the battery supply. 
+# To setup, please read the README.md available below;
+# https://github.com/taichikuji/UPSLite_Plugin_1_3/blob/main/README.md
 
 import logging
 import struct
+import time
 
-import RPi.GPIO as GPIO
-
-import pwnagotchi
-import pwnagotchi.plugins as plugins
-import pwnagotchi.ui.fonts as fonts
 from pwnagotchi.ui.components import LabeledValue
 from pwnagotchi.ui.view import BLACK
+import pwnagotchi.ui.fonts as fonts
+import pwnagotchi.plugins as plugins
+import pwnagotchi
 
-CW2015_ADDRESS   = 0X62
-CW2015_REG_VCELL = 0X02
-CW2015_REG_SOC   = 0X04
-CW2015_REG_MODE  = 0X0A
+class UPSLite:
+    CW2015_ADDRESS = 0x62
+    CW2015_REG_VCELL = 0x02
+    CW2015_REG_SOC = 0x04
+    CW2015_REG_MODE = 0x0A
 
-
-# TODO: add enable switch in config.yml an cleanup all to the best place
-class UPS:
     def __init__(self):
-        # only import when the module is loaded and enabled
+        # Only import when the module is loaded and enabled
         import smbus
-        #0 = /dev/i2c-0 (port I2C0), 1 = /dev/i2c-1 (port I2C1)
         self._bus = smbus.SMBus(1)
+        self.quick_start()
 
-    def voltage(self):
+    def quick_start(self):
         try:
-            read = self._bus.read_word_data(CW2015_ADDRESS, CW2015_REG_VCELL)
-            swapped = struct.unpack("<H", struct.pack(">H", read))[0]
-            return swapped * 1.25 / 1000 / 16
-        except:
-            return 0.0
+            self._bus.write_word_data(self.CW2015_ADDRESS, self.CW2015_REG_MODE, 0x30)
+        except Exception as e:
+            logging.error(f"[upslite] Error during QuickStart: {e}")
 
     def capacity(self):
         try:
-            address = 0x36
-            read = self._bus.read_word_data(CW2015_ADDRESS, CW2015_REG_SOC)
+            read = self._bus.read_word_data(self.CW2015_ADDRESS, self.CW2015_REG_SOC)
             swapped = struct.unpack("<H", struct.pack(">H", read))[0]
-            return swapped / 256
-        except:
-            return 0.0
+            return swapped / 256  # Convert to percentage
+        except Exception as e:
+            logging.error(f"[upslite] Failed to read battery capacity: {e}")
+            return 0
 
-    def charging(self):
+    def voltage(self):
         try:
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(4, GPIO.IN)
-            return '+' if GPIO.input(4) == GPIO.HIGH else '-'
-        except:
-            return '-'
+            read = self._bus.read_word_data(self.CW2015_ADDRESS, self.CW2015_REG_VCELL)
+            swapped = struct.unpack("<H", struct.pack(">H", read))[0]
+            return swapped * 0.305 / 1000  # Convert to volts
+        except Exception as e:
+            logging.error(f"[upslite] Failed to read battery voltage: {e}")
+            return 0
 
-
-class UPSLite(plugins.Plugin):
-    __author__ = 'evilsocket@gmail.com'
+class UPSLitePlugin(plugins.Plugin):
+    __author__ = 'Taichikuji'
     __version__ = '1.0.0'
     __license__ = 'GPL3'
-    __description__ = 'A plugin that will add a voltage indicator for the UPS Lite v1.3'
+    __description__ = 'A plugin that adds a percentage indicator for UPS-Lite'
 
     def __init__(self):
         self.ups = None
 
     def on_loaded(self):
-        self.ups = UPS()
+        self.ups = UPSLite()
+        logging.info("[upslite] Plugin loaded.")
 
     def on_ui_setup(self, ui):
-        ui.add_element('ups', LabeledValue(color=BLACK, label='UPS', value='0%', position=(ui.width() / 2 + 15, 0),
-                                           label_font=fonts.Bold, text_font=fonts.Medium))
+        try:
+            ui.add_element('bat', LabeledValue(color=BLACK, label='BAT', value='0%', 
+                                               position=(ui.width() / 2 + 10, 0), 
+                                               label_font=fonts.Bold, text_font=fonts.Medium))
+        except Exception as err:
+            logging.warning(f"[upslite] UI setup error: {err}")
 
     def on_unload(self, ui):
-        with ui._lock:
-            ui.remove_element('ups')
+        try:
+            with ui._lock:
+                ui.remove_element('bat')
+        except Exception as err:
+            logging.warning(f"[upslite] UI unload error: {err}")
 
     def on_ui_update(self, ui):
-        capacity = self.ups.capacity()
-        charging = self.ups.charging()
-        ui.set('ups', "%2i%s" % (capacity, charging))
+        try:
+            capacity = self.ups.capacity()
+            if capacity == 0:
+                logging.warning("[upslite] Battery capacity read as 0, possible issue with I2C communication.")
+
+            ui.set('bat', f"{int(capacity)}%")
+            if capacity <= self.options.get('shutdown', 5):  # Shutdown threshold
+                logging.info('[upslite] Battery capacity low. Preparing to shut down.')
+                capacities = [capacity]
+                for _ in range(5):
+                    time.sleep(0.5)
+                    capacities.append(self.ups.capacity())
+                max_capacity = max(capacities)
+                if max_capacity <= self.options.get('shutdown', 5):
+                    logging.info('[upslite] Battery exhausted. Shutting down.')
+                    ui.update(force=True, new_data={'status': 'Battery exhausted, bye ...'})
+                    pwnagotchi.shutdown()
+        except Exception as e:
+            logging.error(f"[upslite] Error updating UI: {e}")
